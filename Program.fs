@@ -1,6 +1,5 @@
 module GiraffeTwilioWebhooks.App
 
-open System.Threading.Tasks
 open System.Xml.Linq
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Hosting
@@ -14,21 +13,15 @@ open Twilio.AspNet.Common
 open Twilio.AspNet.Core
 open Twilio.TwiML
 
-// ---------------------------------
-// Web app
-// ---------------------------------
-    
+/// Writes TwiML object to the HTTP response body
 let twiml (twiml : TwiML) : HttpHandler = fun (_ : HttpFunc) (ctx : HttpContext) ->
-    task {
-        ctx.SetContentType "application/xml"
-        let! _ = twiml.ToXDocument()
-                         .SaveAsync(ctx.Response.Body, SaveOptions.DisableFormatting, ctx.RequestAborted)
-                         .ConfigureAwait(false)
-        return Some ctx
-    }
+    ctx.SetContentType "application/xml"
+    ctx.WriteStringAsync(twiml.ToString(SaveOptions.DisableFormatting))
     
+/// Exits out of the request pipeline
 let earlyReturn : HttpFunc = Some >> HttpFuncResult.FromResult
 
+/// Validates that the HTTP request originates from Twilio, if not returns a 403 Forbidden response.
 let validateTwilioRequest : HttpHandler =
     fun (next : HttpFunc) (ctx : HttpContext) ->
         let request = ctx.Request
@@ -38,14 +31,16 @@ let validateTwilioRequest : HttpHandler =
             if System.String.IsNullOrEmpty(options.BaseUrlOverride)
             then null
             else $"{options.BaseUrlOverride}{request.Path}{request.QueryString}"
-        let allowLocal = if options.AllowLocal.HasValue then options.AllowLocal.Value else true
+        let allowLocal = options.AllowLocal
         
         if RequestValidationHelper.IsValidRequest(ctx, authToken, urlOverride, allowLocal)
         then next ctx
         else setStatusCode 403 earlyReturn ctx
-            
+
+/// Handles Twilio Messaging webhook requests and responds with Messaging TwiML
 let messageHandler (smsRequest: SmsRequest) = MessagingResponse().Message($"Ahoy {smsRequest.From}!") |> twiml
     
+/// Handles Twilio Voice webhook requests and responds with Voice TwiML
 let voiceHandler = VoiceResponse().Say("Ahoy!") |> twiml
 
 let webApp =
@@ -55,17 +50,17 @@ let webApp =
     ]
 
 let configureApp (app : IApplicationBuilder) =
-    // Add Giraffe to the ASP.NET Core pipeline
     app
+        // Necessary for request validation so the reverse proxy or tunnel URL is used for validation
         .UseForwardedHeaders()
         .UseGiraffe webApp
 
 let configureServices (services : IServiceCollection) =
-    // Add Giraffe dependencies
     services
         .Configure<ForwardedHeadersOptions>(
             fun (options: ForwardedHeadersOptions) -> options.ForwardedHeaders <- ForwardedHeaders.All
         )
+        // Configures .NET configuration for Twilio request validation
         .AddTwilioRequestValidation()
         .AddGiraffe() |> ignore
 
